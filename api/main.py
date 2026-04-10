@@ -417,6 +417,7 @@ async def lifespan(app: FastAPI):
     global _scheduler_task, _scheduled_analysis_semaphore, _scheduled_analysis_queue_lock
     init_db()
     _log("Database initialized.")
+    _ensure_local_user()
     with _jobs_lock:
         _jobs.clear()
         _job_events.clear()
@@ -480,9 +481,14 @@ async def lifespan(app: FastAPI):
     from tradingagents.dataflows.trade_calendar import _load_cn_trade_dates
     _load_cn_trade_dates()
     _log("Trade calendar pre-loaded.")
-    # Pre-load stock + ETF name map
-    await asyncio.to_thread(_load_cn_stock_map)
-    _log("Stock map pre-loaded on startup.")
+    # Pre-load stock + ETF name map（后台加载，不阻塞启动）
+    async def _bg_load_stock_map():
+        try:
+            await asyncio.to_thread(_load_cn_stock_map)
+            _log("Stock map pre-loaded.")
+        except Exception as e:
+            _log(f"Stock map preload failed (will retry on demand): {e}")
+    asyncio.create_task(_bg_load_stock_map())
     _scheduler_task = asyncio.create_task(_scheduler_loop())
     yield
     _log("Shutting down: Cleaning up resources...")
@@ -1211,6 +1217,52 @@ def _build_runtime_config(overrides: Dict[str, Any], user_id: Optional[str] = No
     return config
 
 
+# ── 本地单用户模式 ──────────────────────────────────────────────────────────
+_LOCAL_USER_ID = "00000000-0000-0000-0000-000000000001"
+_LOCAL_USER_EMAIL = "local@localhost"
+
+
+def _get_local_user() -> UserDB:
+    """返回本地默认用户（无需登录的单用户模式）。"""
+    with get_db_ctx() as db:
+        user = auth_service.get_user_by_id(db, _LOCAL_USER_ID)
+        if user:
+            db.expunge(user)
+            return user
+        # 理论上启动时已创建，但保底在此也创建
+        now = datetime.now(timezone.utc)
+        user = UserDB(
+            id=_LOCAL_USER_ID,
+            email=_LOCAL_USER_EMAIL,
+            is_active=True,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        db.expunge(user)
+        return user
+
+
+def _ensure_local_user() -> None:
+    """启动时确保本地默认用户存在于数据库中。"""
+    with get_db_ctx() as db:
+        if not auth_service.get_user_by_id(db, _LOCAL_USER_ID):
+            now = datetime.now(timezone.utc)
+            user = UserDB(
+                id=_LOCAL_USER_ID,
+                email=_LOCAL_USER_EMAIL,
+                is_active=True,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(user)
+            db.commit()
+            _log("Local user created (single-user mode).")
+
+
+# ── 认证依赖 ────────────────────────────────────────────────────────────────
 class RequireUser:
     def __init__(self, allow_api_token: bool = True):
         self.allow_api_token = allow_api_token
@@ -1219,8 +1271,9 @@ class RequireUser:
         self,
         credentials: Optional[HTTPAuthorizationCredentials] = Depends(_auth_scheme),
     ) -> UserDB:
+        # 无 token → 单用户本地模式，直接返回本地用户
         if not credentials:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
+            return _get_local_user()
 
         token = credentials.credentials
 
@@ -1231,11 +1284,9 @@ class RequireUser:
                 user_id = str(payload.get("sub") or "")
                 user = auth_service.get_user_by_id(db, user_id)
                 if user and user.is_active:
-                    # expunge 使 ORM 对象脱离 session，close 后仍可访问属性
                     db.expunge(user)
                     return user
             except Exception:
-                # 不是有效的 JWT 或已过期，尝试 API Token
                 pass
 
             # 2. 尝试 API Token (仅在允许时)
@@ -1245,32 +1296,33 @@ class RequireUser:
                     db.expunge(user)
                     return user
 
-        detail = "身份验证失败或该接口不支持 API Token 访问" if self.allow_api_token else "该接口仅限网页端登录访问"
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+        # token 无效时也退回本地用户，保证单用户模式始终可用
+        return _get_local_user()
 
 
 # 快捷依赖定义
-_require_api_user = RequireUser(allow_api_token=True)    # 允许 API Token
-_require_web_user = RequireUser(allow_api_token=False)   # 仅限网页登录
+_require_api_user = RequireUser(allow_api_token=True)
+_require_web_user = RequireUser(allow_api_token=False)
 
 
 def _optional_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_auth_scheme),
 ) -> Optional[UserDB]:
     if not credentials:
-        return None
+        return _get_local_user()
     try:
         payload = auth_service.decode_access_token(credentials.credentials)
     except Exception:
-        return None
+        return _get_local_user()
     user_id = str(payload.get("sub") or "")
     if not user_id:
-        return None
+        return _get_local_user()
     with get_db_ctx() as db:
         user = auth_service.get_user_by_id(db, user_id)
         if user:
             db.expunge(user)
-        return user
+            return user
+    return _get_local_user()
 
 
 def _set_job(job_key: str, **kwargs) -> None:
