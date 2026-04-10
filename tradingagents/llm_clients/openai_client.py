@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import time
@@ -45,6 +46,18 @@ class UnifiedChatOpenAI(ChatOpenAI):
             _logger.debug(f"[LLM Response] model={self.model_name} length={len(content)}\n{content}")
         return result
 
+    async def astream(self, input: Any, config: Any = None, **kwargs: Any):
+        """Override astream to use invoke() internally.
+
+        Some proxy providers do not properly implement SSE streaming,
+        causing llm.astream() to hang indefinitely.  We fall back to a
+        regular (non-streaming) invoke in a thread pool and yield the
+        single result as if it were one chunk — the agent code is fully
+        compatible with this because it only concatenates chunk.content.
+        """
+        result = await asyncio.to_thread(self.invoke, input, config, **kwargs)
+        yield result
+
     @staticmethod
     def _is_reasoning_model(model: str) -> bool:
         """Check if model is a reasoning model."""
@@ -87,6 +100,11 @@ class OpenAIClient(BaseLLMClient):
             "max_retries": 0,
             "timeout": self.kwargs.get("timeout", 300.0),
         }
+
+        # 显式传入 base_url（代理场景下确保指向正确的 endpoint）
+        base_url = self.base_url or os.environ.get("OPENAI_BASE_URL", "")
+        if base_url:
+            llm_kwargs["base_url"] = base_url
 
         if not UnifiedChatOpenAI._is_reasoning_model(self.model):
             llm_kwargs["temperature"] = self.kwargs.get("temperature", 0)
