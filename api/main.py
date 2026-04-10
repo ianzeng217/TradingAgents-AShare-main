@@ -3057,12 +3057,21 @@ async def _ai_extract_symbol_and_date_streaming(
     llm_specific_questions: List[str] = []
     llm_user_context: Dict[str, Any] = {}
 
+    # ── 快速路径：直接代码无需调 LLM ─────────────────────────────────────────
+    direct = re.search(r"\b(\d{6}(?:\.[A-Za-z]{2})?|[A-Z]{1,5}(?:\.[A-Z]{1,2})?)\b", text.strip().upper())
+    if direct:
+        quick_symbol = _normalize_symbol(direct.group(1))
+        if quick_symbol:
+            _log(f"[StockExtract] Fast-path direct code: {quick_symbol}")
+            return quick_symbol, today, ["short"], [], [], {}
+
     try:
         client = create_llm_client(
             provider=config.get("llm_provider", "openai"),
             model=config.get("quick_think_llm"),
             base_url=config.get("backend_url"),
             api_key=config.get("api_key"),
+            timeout=30.0,
         )
         prompt = f"""你是金融数据助手。从用户消息中提取以下字段并以 JSON 输出。
 
@@ -3146,12 +3155,21 @@ def _ai_extract_symbol_and_date(
     llm_focus_areas: List[str] = []
     llm_specific_questions: List[str] = []
     llm_user_context: Dict[str, Any] = {}
+    # ── 快速路径：直接代码无需调 LLM ─────────────────────────────────────────
+    direct = re.search(r"\b(\d{6}(?:\.[A-Za-z]{2})?|[A-Z]{1,5}(?:\.[A-Z]{1,2})?)\b", text.strip().upper())
+    if direct:
+        quick_symbol = _normalize_symbol(direct.group(1))
+        if quick_symbol:
+            _log(f"[StockExtract] Fast-path direct code: {quick_symbol}")
+            return quick_symbol, today, ["short"], [], [], {}
+
     try:
         client = create_llm_client(
             provider=config.get("llm_provider", "openai"),
             model=config.get("quick_think_llm"),
             base_url=config.get("backend_url"),
             api_key=config.get("api_key"),
+            timeout=30.0,
         )
         prompt = f"""你是金融数据助手。从用户消息中提取以下字段并以 JSON 输出。
 
@@ -3179,11 +3197,7 @@ def _ai_extract_symbol_and_date(
 用户消息："{text}"
 """
         llm = client.get_llm()
-        
-        # 调试日志：打印请求参数
-        target_url = getattr(llm, 'openai_api_base', 'default')
-        _log(f"[LLM Debug] Requesting StockExtract with model: {getattr(llm, 'model_name', 'unknown')} at {target_url}")
-        _log(f"[LLM Debug] Prompt: {prompt[:500]}...")
+        _log(f"[LLM Debug] StockExtract with model: {getattr(llm, 'model_name', 'unknown')}")
 
         response = llm.invoke(prompt)
         raw = response if isinstance(response, str) else getattr(response, "content", str(response))
