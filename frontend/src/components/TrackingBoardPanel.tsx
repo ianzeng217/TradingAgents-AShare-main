@@ -18,7 +18,6 @@ import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState }
 import { useNavigate } from 'react-router-dom'
 
 import { api } from '@/services/api'
-import { useAuthStore } from '@/stores/authStore'
 import type { PortfolioPositionInput, TrackingBoardItem, TrackingBoardResponse } from '@/types'
 
 const CLAMP_TWO_LINES_STYLE: CSSProperties = {
@@ -32,7 +31,6 @@ type BoardViewMode = 'simple' | 'detailed'
 type BoardTone = 'blue' | 'emerald' | 'rose' | 'amber'
 
 export default function TrackingBoardPanel() {
-    const { user } = useAuthStore()
     const [trackingBoard, setTrackingBoard] = useState<TrackingBoardResponse | null>(null)
     const [trackingLoading, setTrackingLoading] = useState(true)
     const [trackingRefreshing, setTrackingRefreshing] = useState(false)
@@ -78,7 +76,6 @@ export default function TrackingBoardPanel() {
     }, [viewMode])
 
     useEffect(() => {
-        if (!user?.id) return
         let cancelled = false
 
         const loadTrackingBoard = async (silent: boolean) => {
@@ -113,7 +110,7 @@ export default function TrackingBoardPanel() {
             cancelled = true
             window.clearInterval(intervalId)
         }
-    }, [trackingRefreshSeconds, user?.id])
+    }, [trackingRefreshSeconds])
 
     const refreshBoard = useCallback(async () => {
         try {

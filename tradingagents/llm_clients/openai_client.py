@@ -111,12 +111,8 @@ class OpenAIClient(BaseLLMClient):
         elif self.provider == "ollama":
             llm_kwargs["base_url"] = "http://localhost:11434/v1"
             llm_kwargs["api_key"] = "ollama"
-        else:
-            openai_base_url = os.environ.get("OPENAI_BASE_URL")
-            if self.base_url:
-                llm_kwargs["base_url"] = self.base_url
-            elif openai_base_url:
-                llm_kwargs["base_url"] = openai_base_url
+        elif self.base_url:
+            llm_kwargs["base_url"] = self.base_url
 
         # Pass remaining keys
         for key in ("api_key", "callbacks", "reasoning_effort"):

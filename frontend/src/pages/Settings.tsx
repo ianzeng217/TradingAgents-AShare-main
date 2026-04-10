@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Save, Key, Database, Loader2, Trash2, Link2, Copy, Plus, CheckCircle2, Mail, Flame, Webhook } from 'lucide-react'
 import { api } from '@/services/api'
-import { useAuthStore } from '@/stores/authStore'
 import type { RuntimeWarmupResult, UserToken } from '@/types'
 
 type ProviderPreset = {
@@ -39,7 +38,6 @@ function inferPreset(llmProvider: string, backendUrl: string): string {
 }
 
 export default function Settings() {
-    const { user } = useAuthStore()
     const [defaultAnalysts, setDefaultAnalysts] = useState(['market', 'social', 'news', 'fundamentals', 'macro', 'smart_money', 'volume_price'])
     const [customPrompt, setCustomPrompt] = useState('')
     const [llmApiKey, setLlmApiKey] = useState('')
@@ -681,7 +679,7 @@ export default function Settings() {
                     <div className="flex items-center justify-between">
                         <div>
                             <div className="text-sm font-medium text-slate-700 dark:text-slate-200">邮件通知</div>
-                            <div className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">定时投研完成后，自动推送至 {user?.email || '-'}</div>
+                            <div className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">定时投研完成后，通过企业微信机器人推送通知</div>
                         </div>
                         <button
                             type="button"

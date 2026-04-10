@@ -8,7 +8,6 @@ import DecisionCard from '@/components/DecisionCard'
 import ReportViewer from '@/components/ReportViewer'
 import RiskRadar from '@/components/RiskRadar'
 import KeyMetrics from '@/components/KeyMetrics'
-import { useAuthStore } from '@/stores/authStore'
 import { advanceProgress, getReportRunProgress } from '@/utils/progressFeedback'
 
 type ProgressState = {
@@ -178,7 +177,6 @@ function exportReport(report: ReportDetail) {
 }
 
 export default function Reports() {
-    const { user } = useAuthStore()
     const [searchParams, setSearchParams] = useSearchParams()
     const setSearchParamsRef = useRef(setSearchParams)
     setSearchParamsRef.current = setSearchParams
@@ -532,7 +530,7 @@ export default function Reports() {
                 <div>
                     <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">历史报告</h1>
                     <p className="text-slate-500 dark:text-slate-400 mt-1">
-                        {user?.email ? `${user.email} 的私有分析记录 · 共 ${total} 份` : `共 ${total} 份分析报告`}
+                        {`共 ${total} 份分析报告`}
                     </p>
                 </div>
             </div>
