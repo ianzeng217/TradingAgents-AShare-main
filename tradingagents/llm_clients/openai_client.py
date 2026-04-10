@@ -119,8 +119,8 @@ class OpenAIClient(BaseLLMClient):
             if key in self.kwargs:
                 llm_kwargs[key] = self.kwargs[key]
 
-        # For openai provider, fall back to OPENAI_API_KEY env var
-        if self.provider == "openai" and "api_key" not in llm_kwargs:
+        # For openai provider, fall back to OPENAI_API_KEY env var if key is missing or empty
+        if self.provider == "openai" and not llm_kwargs.get("api_key"):
             api_key = os.environ.get("OPENAI_API_KEY")
             if api_key:
                 llm_kwargs["api_key"] = api_key
