@@ -455,8 +455,8 @@ export default function Settings() {
                     <div className="md:col-span-2 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 bg-slate-50/80 dark:bg-slate-900/40 p-4 space-y-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                             <div>
-                                <div className=”text-sm font-medium text-slate-900 dark:text-slate-100”>接口连通测试</div>
-                                <p className=”mt-1 text-xs text-slate-500 dark:text-slate-400”>
+                                <div className="text-sm font-medium text-slate-900 dark:text-slate-100">接口连通测试</div>
+                                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                                     使用当前表单配置向模型发送测试请求，结果仅供验证，不会自动保存。
                                 </p>
                             </div>
