@@ -101,11 +101,6 @@ class OpenAIClient(BaseLLMClient):
             "timeout": self.kwargs.get("timeout", 300.0),
         }
 
-        # 显式传入 base_url（代理场景下确保指向正确的 endpoint）
-        base_url = self.base_url or os.environ.get("OPENAI_BASE_URL", "")
-        if base_url:
-            llm_kwargs["base_url"] = base_url
-
         if not UnifiedChatOpenAI._is_reasoning_model(self.model):
             llm_kwargs["temperature"] = self.kwargs.get("temperature", 0)
 
