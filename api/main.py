@@ -3090,18 +3090,10 @@ async def _ai_extract_symbol_and_date_streaming(
 用户消息："{text}"
 """
         llm = client.get_llm()
-        _log(f"[LLM Debug] Streaming StockExtract with model: {getattr(llm, 'model_name', 'unknown')}")
+        _log(f"[LLM Debug] StockExtract with model: {getattr(llm, 'model_name', 'unknown')}")
 
-        full_content = ""
-        async for chunk in llm.astream(prompt):
-            token = chunk.content if hasattr(chunk, "content") else str(chunk)
-            full_content += token
-            if token:
-                _emit_job_event(job_id, "agent.token", {
-                    "agent": "意图解析",
-                    "report": "stock_extract",
-                    "token": token,
-                })
+        result = await asyncio.to_thread(llm.invoke, prompt)
+        full_content = result.content if hasattr(result, "content") else str(result)
 
         _log(f"[LLM Debug] StockExtract response: {full_content[:200]}")
         m = re.search(r"\{.*\}", full_content, re.DOTALL)
