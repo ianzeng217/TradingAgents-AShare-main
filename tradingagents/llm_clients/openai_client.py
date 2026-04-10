@@ -81,49 +81,20 @@ class OpenAIClient(BaseLLMClient):
 
     def get_llm(self) -> Any:
         """Return configured ChatOpenAI instance with long timeout and no retries."""
-        llm_kwargs = {"model": self.model}
+        llm_kwargs = {
+            "model": self.model,
+            "api_key": os.environ.get("OPENAI_API_KEY"),
+            "max_retries": 0,
+            "timeout": self.kwargs.get("timeout", 300.0),
+        }
 
         if not UnifiedChatOpenAI._is_reasoning_model(self.model):
             llm_kwargs["temperature"] = self.kwargs.get("temperature", 0)
 
-        # ── 极致稳定性配置 ──
-        # 1. 禁用一切重试：避免 Thinking 模型重复扣费或因重连导致的状态丢失
-        llm_kwargs["max_retries"] = 0
-        
-        # 2. 超长超时：默认 300 秒，给足推理模型思考时间
-        llm_kwargs["timeout"] = self.kwargs.get("timeout", 300.0)
-        
-        target_url = self.base_url or "https://api.openai.com/v1"
-        if self.provider == "xai": target_url = "https://api.x.ai/v1"
-        elif self.provider == "openrouter": target_url = "https://openrouter.ai/api/v1"
-        elif self.provider == "ollama": target_url = "http://localhost:11434/v1"
-        
-        print(f"[LLM Client] Init {self.provider} ({self.model}) at {target_url} (Retries=0, Timeout={llm_kwargs['timeout']}s)")
-
-        if self.provider == "xai":
-            llm_kwargs["base_url"] = "https://api.x.ai/v1"
-            api_key = os.environ.get("XAI_API_KEY")
-            if api_key: llm_kwargs["api_key"] = api_key
-        elif self.provider == "openrouter":
-            llm_kwargs["base_url"] = "https://openrouter.ai/api/v1"
-            api_key = os.environ.get("OPENROUTER_API_KEY")
-            if api_key: llm_kwargs["api_key"] = api_key
-        elif self.provider == "ollama":
-            llm_kwargs["base_url"] = "http://localhost:11434/v1"
-            llm_kwargs["api_key"] = "ollama"
-        elif self.base_url:
-            llm_kwargs["base_url"] = self.base_url
-
-        # Pass remaining keys
-        for key in ("api_key", "callbacks", "reasoning_effort"):
+        # 透传 callbacks / reasoning_effort
+        for key in ("callbacks", "reasoning_effort"):
             if key in self.kwargs:
                 llm_kwargs[key] = self.kwargs[key]
-
-        # For openai provider, fall back to OPENAI_API_KEY env var if key is missing or empty
-        if self.provider == "openai" and not llm_kwargs.get("api_key"):
-            api_key = os.environ.get("OPENAI_API_KEY")
-            if api_key:
-                llm_kwargs["api_key"] = api_key
 
         return UnifiedChatOpenAI(**llm_kwargs)
 
