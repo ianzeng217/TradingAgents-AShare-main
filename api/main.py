@@ -2733,8 +2733,8 @@ def _fetch_index_kline(symbol: str, start_date: str, end_date: str) -> List[Dict
             last_exc = exc
             continue
 
-    if last_exc:
-        _log(f"[kline] index fetch failed for {symbol}: {type(last_exc).__name__}: {last_exc}")
+    akshare_error = f"akshare 获取失败: {type(last_exc).__name__}: {last_exc}" if last_exc else "akshare 无数据"
+    _log(f"[kline] index fetch failed for {symbol}: {akshare_error}")
 
     # ── yfinance 兜底（境外服务器 akshare 不通时使用）──────────────────────
     _YF_INDEX_MAP = {
@@ -2781,9 +2781,13 @@ def _fetch_index_kline(symbol: str, start_date: str, end_date: str) -> List[Dict
                     prev_close = close
                 return candles
         except Exception as yf_exc:
+            yf_error = f"yfinance 获取失败: {type(yf_exc).__name__}: {yf_exc}"
             _log(f"[kline] yfinance index fallback failed for {symbol}: {yf_exc}")
+            raise RuntimeError(f"指数 {symbol} K线获取失败 — {akshare_error}；{yf_error}") from yf_exc
+    else:
+        raise RuntimeError(f"指数 {symbol} 不在支持列表中，{akshare_error}")
 
-    return []
+    raise RuntimeError(f"指数 {symbol} K线获取失败 — {akshare_error}；yfinance 无映射或无数据")
 
 
 async def _stream_job_events(job_id: str):
@@ -2850,17 +2854,32 @@ def get_kline(
     else:
         start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=120)).strftime("%Y-%m-%d")
 
+    candles: List[Dict[str, Any]] = []
+    kline_error = "no kline data"
+
     if _is_cn_index_symbol(symbol):
-        candles = _fetch_index_kline(symbol, start, end)
+        try:
+            candles = _fetch_index_kline(symbol, start, end)
+            if not candles:
+                kline_error = f"指数 {symbol} 数据为空（akshare 和 yfinance 均无数据）"
+        except Exception as exc:
+            kline_error = str(exc)
     else:
         # Normalize symbol (convert "阳光电源" -> "300274.SZ")
         symbol = _normalize_symbol(symbol)
         config = _build_runtime_config({})
         set_config(config)
-        raw = route_to_vendor("get_stock_data", symbol, start, end)
-        candles = _parse_stock_csv(raw)
+        try:
+            raw = route_to_vendor("get_stock_data", symbol, start, end)
+            candles = _parse_stock_csv(raw)
+            if not candles:
+                preview = (raw or "")[:300].strip()
+                kline_error = f"数据解析失败，原始内容：{preview}" if preview else f"{symbol} 数据为空"
+        except Exception as exc:
+            kline_error = str(exc)
+
     if not candles:
-        raise HTTPException(status_code=404, detail="no kline data")
+        raise HTTPException(status_code=404, detail=kline_error)
     return KlineResponse(
         symbol=symbol,
         start_date=start,
