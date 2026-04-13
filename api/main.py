@@ -2522,9 +2522,10 @@ def _normalize_symbol(raw: str) -> str:
             return f"{code}.{suffix}"
         market = "SH" if code.startswith(("5", "6", "9")) else "SZ"
         return f"{code}.{market}"
-    # Fallback: 1-6 letter ticker
+    # Fallback: 1-6 letter ticker (e.g. TSLA, AAPL) — but NOT bare exchange codes
+    _EXCHANGE_CODES = {"SH", "SZ", "SS", "BJ", "HK", "NYSE", "NASDAQ"}
     m2 = re.search(r"([A-Z]{1,6}(?:\.[A-Z]{1,3})?)", s)
-    if m2:
+    if m2 and m2.group(1) not in _EXCHANGE_CODES:
         return m2.group(1)
         
     # Final Fallback: Check Chinese Name Map (e.g. "三花智控" -> "002050.SZ")

@@ -220,6 +220,12 @@ export default function KlinePanel({ symbol, onSymbolChange }: KlinePanelProps) 
 
         const load = async () => {
             if (!seriesRef.current) return
+            if (!symbol || !/\d/.test(symbol)) {
+                setCandles([])
+                candlesRef.current = []
+                seriesRef.current?.setData([])
+                return
+            }
             setLoading(true)
             setError(null)
             try {
