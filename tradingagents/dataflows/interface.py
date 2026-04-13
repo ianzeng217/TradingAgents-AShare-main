@@ -30,6 +30,19 @@ def _call_with_timeout(func, args, kwargs, timeout: float):
         raise exc[0]
     return result[0]
 
+
+def _call_with_retry(func, args, kwargs, timeout: float, max_retries: int):
+    """Call with timeout, retrying up to max_retries times on TimeoutError."""
+    last_exc: Exception = TimeoutError()
+    for attempt in range(max_retries + 1):
+        try:
+            return _call_with_timeout(func, args, kwargs, timeout)
+        except TimeoutError as e:
+            last_exc = e
+            if attempt < max_retries:
+                print(f"[provider-retry] attempt {attempt + 1}/{max_retries + 1} timed out, retrying...", flush=True)
+    raise last_exc
+
 # Tools organized by category
 TOOLS_CATEGORIES = {
     "core_stock_apis": {
@@ -124,7 +137,9 @@ def route_to_vendor(method: str, *args, **kwargs):
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
     fallback_vendors = _resolve_vendor_chain(method, vendor_config)
-    timeout = get_config().get("provider_timeout", _DEFAULT_PROVIDER_TIMEOUT)
+    config = get_config()
+    timeout = config.get("provider_timeout", _DEFAULT_PROVIDER_TIMEOUT)
+    max_retries = config.get("provider_max_retries", 2)
     last_exc = None
     _trace(
         f"method={method} category={category} configured='{vendor_config}' "
@@ -143,12 +158,12 @@ def route_to_vendor(method: str, *args, **kwargs):
             continue
 
         try:
-            result = _call_with_timeout(impl_func, args, kwargs, timeout)
+            result = _call_with_retry(impl_func, args, kwargs, timeout, max_retries)
             _trace(f"method={method} vendor={vendor} status=hit")
             return result
         except TimeoutError as exc:
             last_exc = exc
-            _trace(f"method={method} vendor={vendor} status=fallback reason=timeout({timeout}s)")
+            _trace(f"method={method} vendor={vendor} status=fallback reason=timeout(all {max_retries + 1} attempts exceeded {timeout}s)")
             continue
         except (AlphaVantageRateLimitError, NotImplementedError) as exc:
             last_exc = exc
