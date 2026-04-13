@@ -1,8 +1,34 @@
 import os
+import threading
 
 from .alpha_vantage_common import AlphaVantageRateLimitError
 from .config import get_config
 from .providers import build_default_registry
+
+# Default per-provider call timeout (seconds). Override via config key "provider_timeout".
+_DEFAULT_PROVIDER_TIMEOUT = 15
+
+
+def _call_with_timeout(func, args, kwargs, timeout: float):
+    """Run func(*args, **kwargs) in a daemon thread; raise TimeoutError if it exceeds timeout."""
+    result = [None]
+    exc = [None]
+
+    def _target():
+        try:
+            result[0] = func(*args, **kwargs)
+        except Exception as e:
+            exc[0] = e
+
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
+    t.join(timeout)
+
+    if t.is_alive():
+        raise TimeoutError(f"timed out after {timeout}s")
+    if exc[0] is not None:
+        raise exc[0]
+    return result[0]
 
 # Tools organized by category
 TOOLS_CATEGORIES = {
@@ -98,6 +124,7 @@ def route_to_vendor(method: str, *args, **kwargs):
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
     fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+    timeout = get_config().get("provider_timeout", _DEFAULT_PROVIDER_TIMEOUT)
     last_exc = None
     _trace(
         f"method={method} category={category} configured='{vendor_config}' "
@@ -116,20 +143,21 @@ def route_to_vendor(method: str, *args, **kwargs):
             continue
 
         try:
-            result = impl_func(*args, **kwargs)
+            result = _call_with_timeout(impl_func, args, kwargs, timeout)
             _trace(f"method={method} vendor={vendor} status=hit")
             return result
+        except TimeoutError as exc:
+            last_exc = exc
+            _trace(f"method={method} vendor={vendor} status=fallback reason=timeout({timeout}s)")
+            continue
         except (AlphaVantageRateLimitError, NotImplementedError) as exc:
             last_exc = exc
-            # Try next provider for transient/routing issues or placeholder providers.
             _trace(
                 f"method={method} vendor={vendor} status=fallback "
                 f"reason={type(exc).__name__}"
             )
             continue
         except Exception as exc:
-            # Provider-specific runtime/parsing errors (e.g., schema changes, KeyError)
-            # should not terminate the full chain; fall through to next vendor.
             last_exc = exc
             _trace(
                 f"method={method} vendor={vendor} status=fallback "
