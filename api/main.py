@@ -3405,11 +3405,11 @@ async def chat_completions(
                 _emit_job_event(job_id, "job.failed", {"error": str(exc)})
 
         _create_tracked_task(_extract_and_run())
-        return StreamingResponse(
-            _stream_job_events(job_id),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
-        )
+        # 立刻返回 job_id，由前端用 GET /v1/jobs/{job_id}/events 连接 SSE。
+        # 原来直接从 POST 返回 StreamingResponse，Cloudflare 会缓冲 POST 响应
+        # 导致 100s 后 524 超时。GET SSE 不受此限制。
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"job_id": job_id})
 
     # ── 非流式模式：保持原有阻塞行为 ─────────────────────────────────────────────
     symbol, trade_date, horizons, focus_areas, specific_questions, inferred_user_context = \

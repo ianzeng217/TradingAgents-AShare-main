@@ -104,6 +104,17 @@ class ApiService {
             throw new Error(`HTTP error! status: ${response.status}`)
         }
 
+        if (stream) {
+            // POST 立刻返回 {job_id}，再用 GET SSE 连接事件流。
+            // 避免 Cloudflare 缓冲 POST 响应导致 524 超时。
+            const { job_id } = await response.json()
+            return fetch(`${getBaseUrl()}/v1/jobs/${job_id}/events`, {
+                headers: {
+                    ...(getAuthToken() ? { Authorization: `Bearer ${getAuthToken()}` } : {}),
+                },
+            })
+        }
+
         return response
     }
 
