@@ -9,6 +9,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from '@/services/api'
 import { useAnalysisStore } from '@/stores/analysisStore'
+import AnalysisProgressPanel, { type ProgressInfo, type AgentStep } from './AnalysisProgressPanel'
 import type {
     AgentReportEvent,
     AgentSnapshotEvent,
@@ -133,6 +134,7 @@ function ReportCard({
 export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initialInput }: ChatCopilotPanelProps) {
     const [input, setInput] = useState(initialInput || '')
     const [streaming, setStreaming] = useState(false)
+    const [progressInfo, setProgressInfo] = useState<ProgressInfo | null>(null)
     // Tracks agent bubbles waiting for their first token (shows "正在推理分析中..." spinner)
     const pendingAgentMsgIdsRef = useRef<Set<string>>(new Set())
     // Only used to trigger re-render when pending status changes
@@ -295,6 +297,13 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                 firstTokenMapRef.current = {}
                 sectionToMsgIdsRef.current = {}
                 pendingAgentMsgIdsRef.current = new Set(); forceUpdate(n => n + 1)
+                // 初始化进度面板：数据采集中
+                setProgressInfo({
+                    phase: 'collecting',
+                    symbol: symbol || undefined,
+                    collectedFields: [],
+                    agentSteps: [],
+                })
                 break
             }
             case 'job.running':
@@ -317,6 +326,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                 setCurrentHorizon(null)
                 setIsAnalyzing(false)
                 setAnalysisRunState('completed')
+                setProgressInfo(prev => prev ? { ...prev, phase: 'done' } : null)
                 // 任务结束：所有 agent 消息标记为已完成（持久化到 store）
                 pendingAgentMsgIdsRef.current = new Set()
                 forceUpdate(n => n + 1)
@@ -351,6 +361,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                 setCurrentHorizon(null)
                 setIsAnalyzing(false)
                 setAnalysisRunState('failed', String(data.error || 'unknown error'))
+                setProgressInfo(prev => prev ? { ...prev, phase: 'done' } : null)
                 pushAssistant(`分析失败：${String(data.error || 'unknown error')}`)
                 break
             case 'agent.status': {
@@ -381,6 +392,27 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                         timestamp: new Date().toISOString()
                     })
                     pendingAgentMsgIdsRef.current.add(msgId); forceUpdate(n => n + 1)
+
+                    // 更新进度面板：添加/更新 agent 步骤为 running
+                    const agentLabel = AGENT_META_MAP[agentName]?.label || agentName
+                    setProgressInfo(prev => {
+                        if (!prev) return prev
+                        const existingIdx = prev.agentSteps.findIndex(
+                            s => s.name === agentName && (s.horizon || 'main') === (statusData.horizon || 'main')
+                        )
+                        const newStep: AgentStep = {
+                            name: agentName,
+                            label: agentLabel,
+                            status: 'running',
+                            horizon: statusData.horizon,
+                        }
+                        if (existingIdx >= 0) {
+                            const steps = [...prev.agentSteps]
+                            steps[existingIdx] = newStep
+                            return { ...prev, agentSteps: steps }
+                        }
+                        return { ...prev, agentSteps: [...prev.agentSteps, newStep] }
+                    })
                 } else if (statusData.status === 'completed' || statusData.status === 'skipped') {
                     // Agent 完成/跳过 → 移出 pending，标记为已完成（持久化）
                     const existingMsgId = agentMessageMapRef.current[agentKey2]
@@ -389,6 +421,20 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                         forceUpdate(n => n + 1)
                         markAgentMessagesComplete([existingMsgId])
                     }
+
+                    // 更新进度面板：标记 agent 步骤为 done/skipped
+                    const newStatus = statusData.status === 'completed' ? 'done' : 'skipped'
+                    setProgressInfo(prev => {
+                        if (!prev) return prev
+                        return {
+                            ...prev,
+                            agentSteps: prev.agentSteps.map(s =>
+                                s.name === statusData.agent && (s.horizon || 'main') === (statusData.horizon || 'main')
+                                    ? { ...s, status: newStatus }
+                                    : s
+                            ),
+                        }
+                    })
                 }
                 updateAgentStatus(statusData as unknown as AgentStatusEvent)
                 break
@@ -491,6 +537,16 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
             case 'agent.tool_call':
                 // 工具调用信息不再在对话框显示，减少噪音
                 break
+            case 'data.collected': {
+                const fields = Array.isArray(data.fields) ? (data.fields as string[]) : []
+                setProgressInfo(prev => prev ? {
+                    ...prev,
+                    phase: 'analyzing',
+                    symbol: String(data.symbol || prev.symbol || ''),
+                    collectedFields: fields,
+                } : null)
+                break
+            }
             case 'agent.writing':
                 // 气泡已经表示 agent 正在撰写，不再额外发系统消息
                 break
@@ -623,6 +679,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
         reset()
         streamingReportIds.current.clear()
         pendingAgentMsgIdsRef.current = new Set(); forceUpdate(n => n + 1)
+        setProgressInfo(null)
 
         // 立刻插入 typing indicator，让用户知道系统正在响应
         const typingId = `typing-${Date.now()}`
@@ -917,6 +974,9 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                 })}
                 <div ref={messagesEndRef} />
             </div>
+
+            {/* 分析进度面板：数据采集 + 智能体步骤 */}
+            {progressInfo && <AnalysisProgressPanel info={progressInfo} />}
 
             {/* 输入框 */}
             <form onSubmit={handleSubmit} className="mt-3 shrink-0">

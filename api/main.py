@@ -1997,6 +1997,27 @@ async def _run_job_inner(
             await asyncio.to_thread(graph.data_collector.collect, ticker, request.trade_date, horizons=request.horizons)
             _log(f"[Timer] Data Collection step in _run_job took {time.time() - collect_start_t:.2f}s")
 
+            # 关键数据检查：stock_data 为空则中断分析
+            _collected = graph.data_collector.get(ticker, request.trade_date) or {}
+            _stock_data = (_collected.get("stock_data") or "").strip()
+            if not _stock_data or len(_stock_data.splitlines()) < 3:
+                _emit_job_event(job_id, "job.failed", {
+                    "error": f"无法获取 {ticker} 的K线行情数据，该标的暂不可用，请确认代码正确后重试。"
+                })
+                return
+
+            # 通知前端数据采集完成，附带字段列表供进度面板展示
+            _DATA_FIELD_KEYS = [
+                "stock_data", "indicators", "vpa_indicators", "fundamentals",
+                "balance_sheet", "cashflow", "income_statement", "news", "global_news",
+                "fund_flow_board", "fund_flow_individual", "lhb", "insider_transactions",
+                "zt_pool", "hot_stocks",
+            ]
+            _emit_job_event(job_id, "data.collected", {
+                "symbol": ticker,
+                "fields": _DATA_FIELD_KEYS,
+            })
+
             _emit_job_event(job_id, "agent.tool_call", {
                 "agent": "数据采集", "tool": "data_collector",
                 "description": "数据采集完成，开始多维度分析",
@@ -3113,6 +3134,52 @@ def stream_job_events(job_id: str, current_user: UserDB = Depends(_require_api_u
     )
 
 
+def _extract_direct_symbol(text: str) -> Optional[str]:
+    """Fast-path extraction for stock symbols from free-form text.
+
+    Rules:
+    - Prioritize CN 6-digit codes with optional suffix (e.g. 300750.SZ).
+    - Accept contiguous cases like '宁德时代300750.SZ，给出建议' (no word boundary).
+    - Never treat exchange suffixes (SH/SZ/SS/BJ/HK/NYSE/NASDAQ) as symbols.
+    """
+    s = (text or "").strip().upper()
+    if not s:
+        return None
+
+    # 1) CN code first: robust for "中文+代码+中文" with no whitespace boundaries.
+    m = re.search(r"(\d{6}(?:\.(?:SH|SZ|SS|BJ))?)", s)
+    if m:
+        candidate = _normalize_symbol(m.group(1))
+        if _is_plausible_symbol(candidate):
+            return candidate
+
+    # 2) Fallback ticker-like token (e.g., AAPL, TSLA, BRK.B), but filter exchange words.
+    m = re.search(r"\b([A-Z]{1,6}(?:\.[A-Z]{1,3})?)\b", s)
+    if not m:
+        return None
+    candidate = _normalize_symbol(m.group(1))
+    return candidate if _is_plausible_symbol(candidate) else None
+
+
+def _is_plausible_symbol(symbol: Optional[str]) -> bool:
+    """Validate extracted symbol candidates to avoid exchange-only false positives."""
+    if not symbol:
+        return False
+
+    s = str(symbol).strip().upper()
+    if not s:
+        return False
+
+    exchange_codes = {"SH", "SZ", "SS", "BJ", "HK", "NYSE", "NASDAQ"}
+    if s in exchange_codes:
+        return False
+
+    if any(ch.isdigit() for ch in s):
+        return True
+
+    return bool(re.fullmatch(r"[A-Z]{1,6}(?:\.[A-Z]{1,3})?", s))
+
+
 async def _ai_extract_symbol_and_date_streaming(
     text: str, config: Dict[str, Any], job_id: str
 ) -> tuple[Optional[str], Optional[str], List[str], List[str], List[str], Dict[str, Any]]:
@@ -3132,12 +3199,10 @@ async def _ai_extract_symbol_and_date_streaming(
     llm_user_context: Dict[str, Any] = {}
 
     # ── 快速路径：直接代码无需调 LLM ─────────────────────────────────────────
-    direct = re.search(r"\b(\d{6}(?:\.[A-Za-z]{2})?|[A-Z]{1,5}(?:\.[A-Z]{1,2})?)\b", text.strip().upper())
-    if direct:
-        quick_symbol = _normalize_symbol(direct.group(1))
-        if quick_symbol:
-            _log(f"[StockExtract] Fast-path direct code: {quick_symbol}")
-            return quick_symbol, today, ["short"], [], [], {}
+    quick_symbol = _extract_direct_symbol(text)
+    if quick_symbol:
+        _log(f"[StockExtract] Fast-path direct code: {quick_symbol}")
+        return quick_symbol, today, ["short"], [], [], {}
 
     try:
         client = create_llm_client(
@@ -3150,7 +3215,11 @@ async def _ai_extract_symbol_and_date_streaming(
         prompt = f"""你是金融数据助手。从用户消息中提取以下字段并以 JSON 输出。
 
 字段说明：
-- stock_name：用户提到的公司名称或股票代码原文（如"华盛天成"、"贵州茅台"、"600519"、"AAPL"）；美股直接填 ticker。
+- stock_name：用户提到的股票代码或公司名称。
+  ⚠️ A股代码格式为"6位数字.交易所"，如"300750.SZ"、"600519.SH"；
+  若用户同时写了公司名和代码（如"宁德时代300750.SZ"），优先返回代码（"300750.SZ"）；
+  绝不能只返回交易所后缀（"SZ"/"SH"/"BJ"），那不是股票代码；
+  若只有公司名则返回公司名（如"宁德时代"）；美股填 ticker（如"AAPL"）。
 - date：YYYY-MM-DD 格式。今天是 {today}，如未提及则填今天。
 - horizons：分析周期，只能选一个：
   * 用户明确提到"中线/中期/几个月/季度/长期/趋势投资"→ ["medium"]
@@ -3194,17 +3263,29 @@ async def _ai_extract_symbol_and_date_streaming(
     if not llm_name:
         return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
+    # 如果 LLM 只返回了交易所后缀（如 "SZ"/"SH"），从原始文本抢救 6 位代码
+    _BARE_EXCHANGE = {"SH", "SZ", "SS", "BJ", "HK"}
+    if llm_name.strip().upper() in _BARE_EXCHANGE:
+        _log(f"[StockExtract] LLM returned bare exchange code '{llm_name}', rescuing from original text")
+        rescued = _extract_direct_symbol(text)
+        if rescued:
+            return rescued, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+        llm_name = None
+
+    if not llm_name:
+        return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+
     _log(f"[StockExtract] extracted name='{llm_name}', date={llm_date}, horizons={llm_horizons}")
-    if re.match(r"^\d{6}$", llm_name) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
-        symbol = _normalize_symbol(llm_name)
-        return symbol or None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+    quick_from_llm = _extract_direct_symbol(llm_name)
+    if quick_from_llm:
+        return quick_from_llm, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     local_code = await asyncio.to_thread(_search_cn_stock_by_name, llm_name)
     if local_code:
         return local_code, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     fallback = _normalize_symbol(llm_name)
-    if fallback:
+    if _is_plausible_symbol(fallback):
         return fallback, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     return None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
@@ -3230,12 +3311,10 @@ def _ai_extract_symbol_and_date(
     llm_specific_questions: List[str] = []
     llm_user_context: Dict[str, Any] = {}
     # ── 快速路径：直接代码无需调 LLM ─────────────────────────────────────────
-    direct = re.search(r"\b(\d{6}(?:\.[A-Za-z]{2})?|[A-Z]{1,5}(?:\.[A-Z]{1,2})?)\b", text.strip().upper())
-    if direct:
-        quick_symbol = _normalize_symbol(direct.group(1))
-        if quick_symbol:
-            _log(f"[StockExtract] Fast-path direct code: {quick_symbol}")
-            return quick_symbol, today, ["short"], [], [], {}
+    quick_symbol = _extract_direct_symbol(text)
+    if quick_symbol:
+        _log(f"[StockExtract] Fast-path direct code: {quick_symbol}")
+        return quick_symbol, today, ["short"], [], [], {}
 
     try:
         client = create_llm_client(
@@ -3248,7 +3327,11 @@ def _ai_extract_symbol_and_date(
         prompt = f"""你是金融数据助手。从用户消息中提取以下字段并以 JSON 输出。
 
 字段说明：
-- stock_name：用户提到的公司名称或股票代码原文（如"华盛天成"、"贵州茅台"、"600519"、"AAPL"）；美股直接填 ticker。
+- stock_name：用户提到的股票代码或公司名称。
+  ⚠️ A股代码格式为"6位数字.交易所"，如"300750.SZ"、"600519.SH"；
+  若用户同时写了公司名和代码（如"宁德时代300750.SZ"），优先返回代码（"300750.SZ"）；
+  绝不能只返回交易所后缀（"SZ"/"SH"/"BJ"），那不是股票代码；
+  若只有公司名则返回公司名（如"宁德时代"）；美股填 ticker（如"AAPL"）。
 - date：YYYY-MM-DD 格式。今天是 {today}，如未提及则填今天。
 - horizons：分析周期，只能选一个：
   * 用户明确提到"中线/中期/几个月/季度/长期/趋势投资"→ ["medium"]
@@ -3275,7 +3358,7 @@ def _ai_extract_symbol_and_date(
 
         response = llm.invoke(prompt)
         raw = response if isinstance(response, str) else getattr(response, "content", str(response))
-        
+
         # 调试日志：打印原始响应
         _log(f"[LLM Debug] Raw Response: {raw}")
 
@@ -3295,13 +3378,25 @@ def _ai_extract_symbol_and_date(
         _log(f"[StockExtract] LLM returned no stock name for: '{text[:40]}'")
         return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
+    # 如果 LLM 只返回了交易所后缀（如 "SZ"/"SH"），从原始文本抢救 6 位代码
+    _BARE_EXCHANGE = {"SH", "SZ", "SS", "BJ", "HK"}
+    if llm_name.strip().upper() in _BARE_EXCHANGE:
+        _log(f"[StockExtract] LLM returned bare exchange code '{llm_name}', rescuing from original text")
+        rescued = _extract_direct_symbol(text)
+        if rescued:
+            return rescued, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+        llm_name = None
+
+    if not llm_name:
+        return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+
     _log(f"[StockExtract] LLM extracted name='{llm_name}', date={llm_date}, horizons={llm_horizons}")
 
     # ── Step 2: If looks like a direct code (digits / letters), normalize it ──
-    if re.match(r"^\d{6}$", llm_name) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
-        symbol = _normalize_symbol(llm_name)
-        _log(f"[StockExtract] Direct code: {symbol}")
-        return symbol or None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+    quick_from_llm = _extract_direct_symbol(llm_name)
+    if quick_from_llm:
+        _log(f"[StockExtract] Direct code: {quick_from_llm}")
+        return quick_from_llm, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     # ── Step 3: Search akshare A-share name database ──────────────────────────
     local_code = _search_cn_stock_by_name(llm_name)
@@ -3311,7 +3406,7 @@ def _ai_extract_symbol_and_date(
 
     # ── Step 4: Last resort — treat LLM name as a raw code ────────────────────
     fallback = _normalize_symbol(llm_name)
-    if fallback:
+    if _is_plausible_symbol(fallback):
         _log(f"[StockExtract] Fallback normalize: '{llm_name}' → {fallback}")
         return fallback, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
