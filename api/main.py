@@ -2532,7 +2532,11 @@ def _normalize_symbol(raw: str) -> str:
     stock_map = _load_cn_stock_map()
     if s in stock_map:
         return stock_map[s]
-        
+
+    # If the input is a bare exchange code with no digits, it's not a valid symbol
+    if s in _EXCHANGE_CODES:
+        return s  # caller should treat no-digit result as invalid
+
     return s
 
 
@@ -2868,6 +2872,8 @@ def get_kline(
     else:
         # Normalize symbol (convert "阳光电源" -> "300274.SZ")
         symbol = _normalize_symbol(symbol)
+        if not any(c.isdigit() for c in symbol):
+            raise HTTPException(status_code=400, detail=f"无效的股票代码：{symbol}，A股代码必须包含数字（如 300750.SZ）")
         config = _build_runtime_config({})
         set_config(config)
         try:
