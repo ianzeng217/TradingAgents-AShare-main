@@ -38,6 +38,7 @@ DEFAULT_CONFIG = {
         "fundamental_data": "yfinance,cn_akshare,cn_baostock",
         "news_data": "yfinance,cn_akshare,cn_baostock",
         "realtime_data": "yfinance,cn_akshare",
+        "cn_market_data": "cn_akshare",
     },
     "tool_vendors": {},
 }
