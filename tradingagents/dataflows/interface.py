@@ -87,14 +87,10 @@ def get_vendor(category: str, method: str = None) -> str:
 
 
 def _resolve_vendor_chain(method: str, configured_vendor: str) -> list[str]:
-    configured = [v.strip() for v in configured_vendor.split(",") if v.strip()]
-    fallback = configured.copy()
-
-    for provider_name in _registry.list_names():
-        if provider_name not in fallback:
-            fallback.append(provider_name)
-
-    return fallback
+    # Only use explicitly configured vendors.
+    # Do NOT silently append all registered providers — unconfigured fallbacks
+    # can hang indefinitely on overseas servers (e.g. akshare blocked by GFW).
+    return [v.strip() for v in configured_vendor.split(",") if v.strip()]
 
 
 def route_to_vendor(method: str, *args, **kwargs):
