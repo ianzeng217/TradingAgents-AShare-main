@@ -31,12 +31,13 @@ DEFAULT_CONFIG = {
     "provider_trace": os.getenv("TA_TRACE", "1").lower() in ("1", "true", "yes", "on"),
     
     # Data vendor configuration
+    # 境外服务器无法访问国内数据源（akshare/baostock 被封锁），yfinance 优先
     "data_vendors": {
-        "core_stock_apis": "cn_akshare,cn_baostock,yfinance",
-        "technical_indicators": "cn_akshare,cn_baostock,yfinance",
-        "fundamental_data": "cn_akshare,cn_baostock,yfinance",
-        "news_data": "cn_akshare,cn_baostock,yfinance",
-        "realtime_data": "cn_akshare",
+        "core_stock_apis": "yfinance,cn_akshare,cn_baostock",
+        "technical_indicators": "yfinance,cn_akshare,cn_baostock",
+        "fundamental_data": "yfinance,cn_akshare,cn_baostock",
+        "news_data": "yfinance,cn_akshare,cn_baostock",
+        "realtime_data": "yfinance,cn_akshare",
     },
     "tool_vendors": {},
 }
