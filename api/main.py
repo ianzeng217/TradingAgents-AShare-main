@@ -2735,6 +2735,54 @@ def _fetch_index_kline(symbol: str, start_date: str, end_date: str) -> List[Dict
 
     if last_exc:
         _log(f"[kline] index fetch failed for {symbol}: {type(last_exc).__name__}: {last_exc}")
+
+    # ── yfinance 兜底（境外服务器 akshare 不通时使用）──────────────────────
+    _YF_INDEX_MAP = {
+        "000001.SH": "000001.SS",
+        "399001.SZ": "399001.SZ",
+        "399006.SZ": "399006.SZ",
+        "000300.SH": "000300.SS",
+        "000688.SH": "000688.SS",
+        "000905.SH": "000905.SS",
+        "000852.SH": "000852.SS",
+    }
+    yf_symbol = _YF_INDEX_MAP.get(symbol_key)
+    if yf_symbol:
+        try:
+            import yfinance as yf
+            end_dt_inclusive = (datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+            ticker = yf.Ticker(yf_symbol)
+            df = ticker.history(start=start_date, end=end_dt_inclusive)
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            df = df.reset_index()
+            df = df.rename(columns={"index": "Date"})
+            df = _normalize_kline_df(df)
+            df = df[(df["Date"] >= pd.to_datetime(start_date)) & (df["Date"] <= pd.to_datetime(end_date))]
+            if not df.empty:
+                candles = []
+                prev_close = None
+                for _, row in df.iterrows():
+                    close = float(row["Close"])
+                    change = close - prev_close if prev_close is not None else None
+                    change_pct = (change / prev_close * 100) if prev_close not in (None, 0) and change is not None else None
+                    candles.append({
+                        "date": row["Date"].strftime("%Y-%m-%d"),
+                        "open": float(row["Open"]),
+                        "high": float(row["High"]),
+                        "low": float(row["Low"]),
+                        "close": close,
+                        "volume": float(row["Volume"]) if "Volume" in df.columns and pd.notna(row.get("Volume")) else None,
+                        "amount": None,
+                        "change": change,
+                        "change_percent": change_pct,
+                        "turnover_rate": None,
+                    })
+                    prev_close = close
+                return candles
+        except Exception as yf_exc:
+            _log(f"[kline] yfinance index fallback failed for {symbol}: {yf_exc}")
+
     return []
 
 
